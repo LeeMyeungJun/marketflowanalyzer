@@ -1,441 +1,426 @@
-using System;
+ï»¿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace MarketFlowAnalyzer
 {
     // ==========================================
-    // 1. Models & Services (µ¥ÀÌÅÍ ±¸Á¶ ¹× °¡»ó µ¥ÀÌÅÍ ¼­ºñ½º)
+    // 1. Models
     // ==========================================
+    public class YFResponse { public YFQuoteResponse quoteResponse { get; set; } }
+    public class YFQuoteResponse { public List<YFQuote> result { get; set; } }
+    public class YFQuote { public string symbol { get; set; } public string shortName { get; set; } public double regularMarketPrice { get; set; } public long regularMarketVolume { get; set; } public double regularMarketChangePercent { get; set; } }
+
     public class StockData
     {
         public int Rank { get; set; }
+        public string Sector { get; set; }
         public string Name { get; set; }
-        public int CurrentPrice { get; set; }
+        public string Ticker { get; set; }
+        public double CurrentPrice { get; set; }
         public double ChangeRate { get; set; }
         public string TradeValue { get; set; }
-        public string ForeignBuy { get; set; }
-        public string InstitutionalBuy { get; set; }
         public int AiScore { get; set; }
     }
 
+    public class ChartSeries
+    {
+        public string Name { get; set; }
+        public string[] XLabels { get; set; } // ë‚ ì§œ ë¼ë²¨ (ì˜ˆ: D-4, ì˜¤ëŠ˜)
+        public double[] Y { get; set; }       // ê±°ë˜ëŒ€ê¸ˆ ë°ì´í„°
+        public Color SeriesColor { get; set; }
+    }
+
+    // ==========================================
+    // 2. MarketData Service
+    // ==========================================
     public class MarketDataService
     {
-        private Random _rand = new Random();
+        private static readonly HttpClient _http;
+        private Random _rnd = new Random();
 
-        // ¼±ÅÃµÈ ¼½ÅÍ ¹× ±â°£º° Â÷Æ® µ¥ÀÌÅÍ »ı¼º (XÃà ¼ø¼­, YÃà °Å·¡´ë±İ)
-        public (double[] X, double[] Y) GetSectorChartData(string sector, string period)
+        // ğŸ’¡ 60ì¼ì¹˜ ê³¼ê±° ë°ì´í„°ë¥¼ ê³ ì •ìœ¼ë¡œ ë³´ê´€í•˜ëŠ” ë©”ëª¨ë¦¬ ìºì‹œ
+        private Dictionary<string, double[]> _historicalVolume = new Dictionary<string, double[]>();
+
+        static MarketDataService()
         {
-            int points = period == "¿À´Ã" ? 20 : period == "5ÀÏ" ? 40 : period == "20ÀÏ" ? 60 : 100;
-            double[] x = new double[points];
-            double[] y = new double[points];
-
-            double currentVal = 5000 + _rand.Next(-1000, 2000);
-            for (int i = 0; i < points; i++)
-            {
-                x[i] = i;
-                currentVal += _rand.Next(-500, 600);
-                if (currentVal < 1000) currentVal = 1000;
-                y[i] = currentVal;
-            }
-            return (x, y);
+            _http = new HttpClient();
+            _http.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
         }
 
-        // ¼±ÅÃµÈ ¼½ÅÍÀÇ ½Ç½Ã°£ TOP Á¾¸ñ ¸ñ·Ï
-        public List<StockData> GetTopStocks(string sector)
+        private Dictionary<string, List<string>> _sectorTickers = new Dictionary<string, List<string>>()
         {
-            return new List<StockData>
+            { "ë°˜ë„ì²´", new List<string> { "NVDA", "AMD", "TSM", "AVGO", "SOXL", "INTC", "005930.KS" } },
+            { "AI", new List<string> { "MSFT", "GOOGL", "META", "PLTR", "CRWD" } },
+            { "ìë™ì°¨", new List<string> { "TSLA", "TM", "F", "GM", "005380.KS" } },
+            { "ë°”ì´ì˜¤", new List<string> { "LLY", "NVO", "JNJ", "MRK", "207940.KS" } },
+            { "2ì°¨ì „ì§€", new List<string> { "ALB", "SQM", "QS", "LIT", "006400.KS" } },
+            { "ë°©ì‚°", new List<string> { "LMT", "RTX", "NOC", "GD", "012450.KS" } },
+            { "ê¸ˆìœµ", new List<string> { "JPM", "V", "MA", "BAC" } },
+            { "ì—ë„ˆì§€", new List<string> { "XOM", "CVX", "COP", "OXY" } }
+        };
+
+        public MarketDataService()
+        {
+            // í”„ë¡œê·¸ë¨ ì‹œì‘ ì‹œ ê° ì„¹í„°ë³„ 60ì¼ì¹˜ ê³¼ê±° ë°ì´í„° ê³ ì • ìƒì„± (ì ˆëŒ€ ë³€í•˜ì§€ ì•ŠìŒ)
+            foreach (var sec in _sectorTickers.Keys)
             {
-                new StockData { Rank = 1, Name = sector + " ´ëÀåÁÖ", CurrentPrice = 78200, ChangeRate = 4.8, TradeValue = "5,420¾ï", ForeignBuy = "+210¾ï", InstitutionalBuy = "+120¾ï", AiScore = 96 },
-                new StockData { Rank = 2, Name = sector + " ÇÙ½ÉÁÖ A", CurrentPrice = 145000, ChangeRate = 2.1, TradeValue = "3,110¾ï", ForeignBuy = "-30¾ï", InstitutionalBuy = "+85¾ï", AiScore = 89 },
-                new StockData { Rank = 3, Name = sector + " ¼öÇıÁÖ B", CurrentPrice = 32400, ChangeRate = -1.5, TradeValue = "1,950¾ï", ForeignBuy = "+140¾ï", InstitutionalBuy = "-40¾ï", AiScore = 75 },
-                new StockData { Rank = 4, Name = sector + " ºÎÇ°ÁÖ C", CurrentPrice = 12500, ChangeRate = 8.7, TradeValue = "1,420¾ï", ForeignBuy = "+50¾ï", InstitutionalBuy = "+20¾ï", AiScore = 91 }
-            };
+                double[] history = new double[60];
+                double baseVol = 3000 + (sec.Length * 500);
+                for (int i = 0; i < 60; i++)
+                {
+                    baseVol += _rnd.Next(-300, 350);
+                    if (baseVol < 500) baseVol = 500 + _rnd.Next(100, 500);
+                    history[i] = baseVol;
+                }
+                _historicalVolume[sec] = history;
+            }
+        }
+
+        // íƒ€ì´ë¨¸ê°€ ëŒ ë•Œ 'ì˜¤ëŠ˜(59ë²ˆ ì¸ë±ìŠ¤)'ì˜ ë°ì´í„°ë§Œ ì‹¤ì‹œê°„ìœ¼ë¡œ ë³€ë™ì‹œí‚´
+        public void UpdateTodayVolumeLive()
+        {
+            foreach (var sec in _historicalVolume.Keys)
+            {
+                double change = _rnd.Next(-150, 200);
+                _historicalVolume[sec][59] += change;
+                if (_historicalVolume[sec][59] < 100) _historicalVolume[sec][59] = 100;
+            }
+        }
+
+        // ì°¨íŠ¸ì— ê·¸ë¦´ ê³¼ê±° ë°ì´í„° + ì˜¤ëŠ˜ ë°ì´í„° ë°°ì—´ ìë¥´ê¸°
+        public (string[] XLabels, double[] Y) GetChartData(string sector, string period)
+        {
+            int days = period == "ì˜¤ëŠ˜" ? 1 : period == "5ì¼" ? 5 : period == "20ì¼" ? 20 : 60;
+
+            string[] labels = new string[days];
+            double[] yData = new double[days];
+
+            double[] fullHistory = _historicalVolume[sector];
+
+            for (int i = 0; i < days; i++)
+            {
+                // 60ê°œ ë°°ì—´ ì¤‘ ëì—ì„œë¶€í„° í•„ìš”í•œ ë§Œí¼ ì˜ë¼ëƒ„
+                int targetIndex = 60 - days + i;
+                yData[i] = fullHistory[targetIndex];
+
+                // ë¼ë²¨ë§ (ë§ˆì§€ë§‰ì€ 'ì˜¤ëŠ˜', ë‚˜ë¨¸ì§€ëŠ” 'D-ë‚ ì§œ')
+                if (i == days - 1) labels[i] = "ì˜¤ëŠ˜";
+                else labels[i] = $"D-{days - 1 - i}";
+            }
+            return (labels, yData);
+        }
+
+        public async Task<List<StockData>> GetRealTimeTopStocksAsync(List<string> sectors)
+        {
+            var resultList = new List<StockData>();
+            foreach (var sec in sectors)
+            {
+                if (!_sectorTickers.ContainsKey(sec)) continue;
+                string url = $"https://query1.finance.yahoo.com/v7/finance/quote?symbols={string.Join(",", _sectorTickers[sec])}";
+
+                try
+                {
+                    string json = await _http.GetStringAsync(url);
+                    var yfData = JsonSerializer.Deserialize<YFResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                    if (yfData?.quoteResponse?.result != null && yfData.quoteResponse.result.Count > 0)
+                    {
+                        var top = yfData.quoteResponse.result.OrderByDescending(s => s.regularMarketPrice * s.regularMarketVolume).First();
+                        double tradeValueUSD = top.regularMarketPrice * top.regularMarketVolume;
+                        resultList.Add(new StockData
+                        {
+                            Sector = sec,
+                            Ticker = top.symbol,
+                            Name = top.shortName ?? top.symbol,
+                            CurrentPrice = Math.Round(top.regularMarketPrice, 2),
+                            ChangeRate = Math.Round(top.regularMarketChangePercent, 2),
+                            TradeValue = FormatMoney(tradeValueUSD + _rnd.Next(-50000, 50000)), // ë¼ì´ë¸Œ íš¨ê³¼ ë…¸ì´ì¦ˆ
+                            AiScore = _rnd.Next(85, 100)
+                        });
+                    }
+                }
+                catch { resultList.Add(new StockData { Sector = sec, Ticker = "ERR", Name = "ìˆ˜ì‹  ì§€ì—°" }); }
+            }
+            var sortedList = resultList.OrderByDescending(s => s.AiScore).ToList();
+            for (int i = 0; i < sortedList.Count; i++) sortedList[i].Rank = i + 1;
+            return sortedList;
+        }
+
+        private string FormatMoney(double value)
+        {
+            if (value >= 1_000_000_000) return "$" + (value / 1_000_000_000).ToString("0.00") + "B";
+            if (value >= 1_000_000) return "$" + (value / 1_000_000).ToString("0.00") + "M";
+            return "$" + value.ToString("N0");
         }
     }
 
     // ==========================================
-    // 2. Custom Control (¿ÜºÎ ¶óÀÌºê·¯¸® ¾ø´Â ¼ø¼ö ±×·¡ÇÈ Â÷Æ®)
+    // 3. Custom Multi-Bar Chart (ë´‰/ë§‰ëŒ€ ê·¸ë˜í”„ë¡œ ì™„ë²½ ì¬ì„¤ê³„)
     // ==========================================
-    public class CustomAreaChart : PictureBox
+    public class CustomMultiBarChart : PictureBox
     {
-        private double[] _xData = new double[0];
-        private double[] _yData = new double[0];
+        private List<ChartSeries> _series = new List<ChartSeries>();
         private string _title = "";
-        private Point _mousePos = Point.Empty;
-        private bool _showTooltip = false;
-        private Color _accentColor = Color.FromArgb(0, 122, 204);
+        private Point _mouse = Point.Empty;
+        private bool _showTip = false;
 
-        public CustomAreaChart()
+        public CustomMultiBarChart()
         {
-            this.DoubleBuffered = true; // È­¸é ±ôºıÀÓ ¹æÁö
-            this.BackColor = Color.FromArgb(35, 35, 35);
-            this.MouseMove += (s, e) => { _mousePos = e.Location; _showTooltip = true; this.Invalidate(); };
-            this.MouseLeave += (s, e) => { _showTooltip = false; this.Invalidate(); };
+            DoubleBuffered = true; BackColor = Color.FromArgb(20, 20, 20);
+            MouseMove += (s, e) => { _mouse = e.Location; _showTip = true; Invalidate(); };
+            MouseLeave += (s, e) => { _showTip = false; Invalidate(); };
         }
 
-        public void UpdateChart(string title, double[] x, double[] y)
+        public void UpdateChart(string title, List<ChartSeries> seriesList)
         {
-            _title = title;
-            _xData = x;
-            _yData = y;
-            this.Invalidate(); // ´Ù½Ã ±×¸®±â
+            _title = title; _series = seriesList; Invalidate();
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.DrawString(_title, new Font("ë§‘ì€ ê³ ë”•", 12, FontStyle.Bold), Brushes.White, 15, 12);
 
-            // 1. Á¦¸ñ ±×¸®±â
-            using (Font titleFont = new Font("¸¼Àº °íµñ", 12, FontStyle.Bold))
-            {
-                g.DrawString(_title, titleFont, Brushes.WhiteSmoke, 15, 12);
-            }
+            if (_series == null || _series.Count == 0 || _series[0].Y.Length == 0) return;
 
-            if (_xData.Length == 0 || _yData.Length == 0) return;
-
-            // ·¹ÀÌ¾Æ¿ô ¿©¹é ¼³Á¤
-            int padLeft = 70, padRight = 30, padTop = 45, padBottom = 40;
-            int w = this.Width - padLeft - padRight;
-            int h = this.Height - padTop - padBottom;
+            int pL = 70, pR = 30, pT = 50, pB = 40, w = Width - pL - pR, h = Height - pT - pB;
             if (w <= 0 || h <= 0) return;
 
-            double minY = _yData.Min(), maxY = _yData.Max();
-            if (minY == maxY) { minY -= 10; maxY += 10; }
-            double rangeY = maxY - minY;
+            int numDays = _series[0].Y.Length;
+            int numSectors = _series.Count;
 
-            double minX = _xData.Min(), maxX = _xData.Max();
-            if (minX == maxX) { minX -= 1; maxX += 1; }
-            double rangeX = maxX - minX;
+            double maxY = _series.Max(s => s.Y.Max()) * 1.1; // ìµœëŒ€ê°’ ì—¬ë°± 10%
+            if (maxY == 0) maxY = 100;
 
-            // 2. ¹è°æ ±×¸®µå¼± ¹× YÃà ´ÜÀ§¼± ±×¸®±â
-            using (Pen gridPen = new Pen(Color.FromArgb(55, 55, 55), 1))
-            using (Font axisFont = new Font("¸¼Àº °íµñ", 9))
+            // ë°°ê²½ ê°€ë¡œì„ (ê·¸ë¦¬ë“œ) ê·¸ë¦¬ê¸°
+            for (int i = 0; i <= 5; i++)
             {
-                int ticks = 4;
-                for (int i = 0; i <= ticks; i++)
+                float py = pT + h - (h * i / 5f);
+                g.DrawLine(new Pen(Color.FromArgb(60, 60, 60), 1), pL, py, pL + w, py);
+                g.DrawString($"{(int)(maxY * i / 5f)}", new Font("ë§‘ì€ ê³ ë”•", 9), Brushes.LightGray, 5, py - 7);
+            }
+
+            // ë§‰ëŒ€(Bar) ê³„ì‚° ë° ë Œë”ë§
+            float slotW = w / (float)numDays; // í•˜ë£¨ì— í• ë‹¹ëœ ê°€ë¡œ ì˜ì—­
+            float totalBarGroupW = slotW * 0.8f; // ê·¸ì¤‘ 80%ë§Œ ë§‰ëŒ€ê°€ ì°¨ì§€ (20%ëŠ” ë‚ ì§œê°„ ì—¬ë°±)
+            float singleBarW = totalBarGroupW / numSectors; // ë§‰ëŒ€ í•˜ë‚˜ ë‘ê»˜
+
+            // ì˜¤ëŠ˜ ë‚ ì§œ(ë§ˆì§€ë§‰ ìŠ¬ë¡¯) í•˜ì´ë¼ì´íŠ¸ ë°°ê²½
+            float todayX = pL + (numDays - 1) * slotW;
+            g.FillRectangle(new SolidBrush(Color.FromArgb(15, 255, 255, 255)), todayX, pT, slotW, h);
+
+            for (int d = 0; d < numDays; d++)
+            {
+                // Xì¶• ë‚ ì§œ ë¼ë²¨ ì“°ê¸° (D-4, ì˜¤ëŠ˜ ë“±)
+                string label = _series[0].XLabels[d];
+                var font = new Font("ë§‘ì€ ê³ ë”•", 9, label == "ì˜¤ëŠ˜" ? FontStyle.Bold : FontStyle.Regular);
+                var brush = label == "ì˜¤ëŠ˜" ? Brushes.Yellow : Brushes.Gray;
+                float labelW = g.MeasureString(label, font).Width;
+                g.DrawString(label, font, brush, pL + d * slotW + (slotW - labelW) / 2, pT + h + 8);
+
+                // ì„¹í„°ë³„ ë§‰ëŒ€ ê·¸ë¦¬ê¸°
+                for (int s = 0; s < numSectors; s++)
                 {
-                    float yVal = (float)(minY + (rangeY * i / ticks));
-                    float py = padTop + h - (h * i / ticks);
-                    g.DrawLine(gridPen, padLeft, py, padLeft + w, py);
-                    g.DrawString($"{(int)yVal}¾ï", axisFont, Brushes.Gray, 10, py - 7);
+                    float val = (float)_series[s].Y[d];
+                    float barH = (val / (float)maxY) * h;
+
+                    // ê° ì„¹í„° ë§‰ëŒ€ì˜ ì •í™•í•œ X ì¢Œí‘œ ê³„ì‚°
+                    float bx = pL + d * slotW + (slotW - totalBarGroupW) / 2 + (s * singleBarW);
+                    float by = pT + h - barH;
+
+                    // ë§‰ëŒ€ ë³¸ì²´ (ì•½ê°„ íˆ¬ëª…í•˜ê²Œ)
+                    g.FillRectangle(new SolidBrush(Color.FromArgb(200, _series[s].SeriesColor)), bx, by, singleBarW - 1, barH);
+                    // ë§‰ëŒ€ í…Œë‘ë¦¬ (ì„ ëª…í•˜ê²Œ)
+                    g.DrawRectangle(new Pen(_series[s].SeriesColor, 1), bx, by, singleBarW - 1, barH);
                 }
             }
 
-            // 3. µ¥ÀÌÅÍ ÁÂÇ¥¸¦ È­¸é ÇÈ¼¿ ÁÂÇ¥·Î º¯È¯
-            PointF[] points = new PointF[_xData.Length];
-            for (int i = 0; i < _xData.Length; i++)
+            // ë§ˆìš°ìŠ¤ ì˜¤ë²„ ì‹œ íˆ´íŒ í‘œì‹œ
+            if (_showTip && _mouse.X > pL && _mouse.X < pL + w && _mouse.Y > pT && _mouse.Y < pT + h)
             {
-                float px = padLeft + (float)((_xData[i] - minX) / rangeX * w);
-                float py = padTop + h - (float)((_yData[i] - minY) / rangeY * h);
-                points[i] = new PointF(px, py);
-            }
-
-            // 4. ÀÚ±İ Èå¸§À» ½Ã°¢È­ÇÏ´Â ¹İÅõ¸í ¸éÀû(Area) Ã¤¿ì±â
-            if (points.Length > 1)
-            {
-                List<PointF> fillPoints = new List<PointF>(points);
-                fillPoints.Add(new PointF(points[points.Length - 1].X, padTop + h));
-                fillPoints.Add(new PointF(points[0].X, padTop + h));
-
-                using (LinearGradientBrush fillBrush = new LinearGradientBrush(
-                    new Point(0, padTop), new Point(0, padTop + h),
-                    Color.FromArgb(80, _accentColor), Color.FromArgb(10, _accentColor)))
+                int hoverDayIdx = (int)((_mouse.X - pL) / slotW);
+                if (hoverDayIdx >= 0 && hoverDayIdx < numDays)
                 {
-                    g.FillPolygon(fillBrush, fillPoints.ToArray());
-                }
+                    float hoverX = pL + hoverDayIdx * slotW + slotW / 2;
+                    g.DrawLine(new Pen(Color.FromArgb(150, Color.White)) { DashStyle = DashStyle.Dash }, hoverX, pT, hoverX, pT + h);
 
-                // ¼±(Line) ±×¸®±â
-                using (Pen linePen = new Pen(_accentColor, 2.5f))
-                {
-                    g.DrawLines(linePen, points);
-                }
-            }
+                    string tip = $"[ {_series[0].XLabels[hoverDayIdx]} ìê¸ˆ íë¦„ ]\n";
+                    for (int s = 0; s < _series.Count; s++)
+                        tip += $"â–  {_series[s].Name}: {(int)_series[s].Y[hoverDayIdx]}\n";
 
-            // 5. ½Ç½Ã°£ ¸¶¿ì½º Æ®·¡Å· ¹× °¡ÀÌµå¶óÀÎ/ÅøÆÁ ±¸Çö
-            if (_showTooltip && points.Length > 0)
-            {
-                // ¸¶¿ì½º¿Í °¡Àå °¡±î¿î X µ¥ÀÌÅÍ Æ÷ÀÎÆ® Ã£±â
-                int idx = 0;
-                float minDist = float.MaxValue;
-                for (int i = 0; i < points.Length; i++)
-                {
-                    float dist = Math.Abs(points[i].X - _mousePos.X);
-                    if (dist < minDist) { minDist = dist; idx = i; }
-                }
+                    var f = new Font("ë§‘ì€ ê³ ë”•", 9); var sz = g.MeasureString(tip, f);
+                    float tx = _mouse.X + 15, ty = _mouse.Y + 15;
+                    if (tx + sz.Width > Width) tx = _mouse.X - sz.Width - 10;
 
-                PointF targetPt = points[idx];
-
-                // ¼¼·Î Á¡¼± ±×¸®±â
-                using (Pen guidePen = new Pen(Color.FromArgb(120, Color.White), 1) { DashStyle = DashStyle.Dash })
-                {
-                    g.DrawLine(guidePen, targetPt.X, padTop, targetPt.X, padTop + h);
-                }
-
-                // Æ÷ÀÎÆ® °­Á¶ ¿ø ±×¸®±â
-                g.FillEllipse(Brushes.White, targetPt.X - 5, targetPt.Y - 5, 10, 10);
-                using (Pen circlePen = new Pen(_accentColor, 2))
-                {
-                    g.DrawEllipse(circlePen, targetPt.X - 5, targetPt.Y - 5, 10, 10);
-                }
-
-                // ÅøÆÁ »óÀÚ ·»´õ¸µ
-                string tipText = $"±¸ºĞ: {idx + 1}±¸°£\nÀÚ±İ Èå¸§: {(int)_yData[idx]} ¾ï\nº¯µ¿¼º: +{((_yData[idx] - minY) / (minY == 0 ? 1 : minY) * 100):0.0}%";
-                using (Font tipFont = new Font("¸¼Àº °íµñ", 9))
-                {
-                    SizeF boxSize = g.MeasureString(tipText, tipFont);
-                    float tx = _mousePos.X + 15;
-                    float ty = _mousePos.Y + 15;
-
-                    if (tx + boxSize.Width > this.Width) tx = _mousePos.X - boxSize.Width - 20;
-                    if (ty + boxSize.Height > this.Height) ty = _mousePos.Y - boxSize.Height - 20;
-
-                    RectangleF rect = new RectangleF(tx, ty, boxSize.Width + 12, boxSize.Height + 10);
-                    g.FillRectangle(new SolidBrush(Color.FromArgb(230, 20, 20, 20)), rect);
-                    g.DrawRectangle(new Pen(_accentColor, 1), Rectangle.Round(rect));
-                    g.DrawString(tipText, tipFont, Brushes.WhiteSmoke, tx + 6, ty + 5);
+                    var r = new RectangleF(tx, ty, sz.Width + 14, sz.Height + 8);
+                    g.FillRectangle(new SolidBrush(Color.FromArgb(240, 30, 30, 30)), r);
+                    g.DrawRectangle(new Pen(Color.Gray, 1), Rectangle.Round(r));
+                    g.DrawString(tip, f, Brushes.White, tx + 7, ty + 6);
                 }
             }
         }
     }
 
     // ==========================================
-    // 3. UI View (µğÀÚÀÌ³Ê ¾øÀÌ ¼ø¼ö ÄÚµå·Î È­¸é ±¸¼º)
+    // 4. UI View (MainForm)
     // ==========================================
     public class MainForm : Form
     {
-        private MarketDataService _dataService = new MarketDataService();
+        private MarketDataService _api = new MarketDataService();
+        private Color[] _colors = { Color.DeepSkyBlue, Color.HotPink, Color.LimeGreen, Color.Orange, Color.Gold, Color.MediumSpringGreen };
 
-        // ´ÙÅ©Å×¸¶ ÄÃ·¯ ÆÈ·¹Æ®
-        private Color BgColor = Color.FromArgb(20, 20, 20);
-        private Color PanelBgColor = Color.FromArgb(30, 30, 30);
-        private Color TextColor = Color.WhiteSmoke;
-        private Color AccentColor = Color.FromArgb(0, 122, 204);
+        private FlowLayoutPanel topPanel, sectorPanel, controlPanel;
+        private SplitContainer split;
+        private CustomMultiBarChart chart;
+        private Label lblSummary;
+        private DataGridView dgv;
+        private RichTextBox rtbLog;
 
-        // UI ÄÁÆ®·Ñ ¼±¾ğ
-        private FlowLayoutPanel topLayout;
-        private FlowLayoutPanel sectorLayout;
-        private SplitContainer mainSplitter;
-        private CustomAreaChart mainChart;
-        private Label lblSectorSummary;
-        private DataGridView dgvSectorStocks;
-        private RichTextBox rtbAiLog;
+        private System.Windows.Forms.Timer _liveTimer;
+        private bool _isRefreshing = false;
 
         public MainForm()
         {
-            this.Text = "Market Flow Analyzer (½ÃÀå ÀÚ±İ Èå¸§ ºĞ¼®±â)";
-            this.Size = new Size(1350, 850);
-            this.BackColor = BgColor;
-            this.ForeColor = TextColor;
-            this.Font = new Font("¸¼Àº °íµñ", 10F);
+            Text = "Market Flow Analyzer (Volume Bar Chart)";
+            Size = new Size(1400, 900);
+            BackColor = Color.FromArgb(18, 18, 18); ForeColor = Color.White; Font = new Font("ë§‘ì€ ê³ ë”•", 10F);
 
-            BuildProgrammaticUI();
-            InitializeDefaultData();
+            BuildUI();
+
+            _liveTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+            _liveTimer.Tick += async (s, e) => {
+                _api.UpdateTodayVolumeLive(); // í•µì‹¬: 5ì´ˆë§ˆë‹¤ ì˜¤ëŠ˜ ë§‰ëŒ€ê°’ë§Œ ë³€ê²½
+                await RefreshDataAsync(true);
+            };
+            _liveTimer.Start();
+
+            _ = RefreshDataAsync(false);
         }
 
-        private void BuildProgrammaticUI()
+        private void BuildUI()
         {
-            // ÀüÃ¼ È­¸é ºĞÇÒ¿ë ÃÖ»óÀ§ ·¹ÀÌ¾Æ¿ô
-            TableLayoutPanel baseTable = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
-            baseTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 115F)); // ¨ç »ó´Ü ¿É¼Ç ÆĞ³Î
-            baseTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));  // ¨è Â÷Æ® ¹× ¨é Á¾¸ñ¸®½ºÆ® ÆĞ³Î
-            baseTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 180F)); // ¨ê ÇÏ´Ü ½Ç½Ã°£ ºĞ¼® ÆĞ³Î
-            this.Controls.Add(baseTable);
+            var baseTable = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+            baseTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 130F)); baseTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); baseTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 180F));
+            Controls.Add(baseTable);
 
-            // ------------------------------------------
-            // ¨ç »ó´Ü ¿É¼Ç ¿µ¿ª »ı¼º
-            // ------------------------------------------
-            topLayout = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = PanelBgColor, Padding = new Padding(12), FlowDirection = FlowDirection.TopDown, WrapContents = false };
+            topPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 30, 30), Padding = new Padding(10), FlowDirection = FlowDirection.TopDown };
 
-            // 1) µ¥ÀÌÅÍ Ç¥½Ã Ã¼Å©¹Ú½º
-            FlowLayoutPanel checkPanel = CreateRowFlow();
-            string[] checkOpts = { "°Å·¡´ë±İ", "°Å·¡·®", "°Å·¡·® Áõ°¡À²", "Æò±Õ µî¶ô·ü", "¿Ü±¹ÀÎ ¼ø¸Å¼ö", "±â°ü ¼ø¸Å¼ö", "AI Á¡¼ö" };
-            foreach (var opt in checkOpts)
+            var optPanel = new FlowLayoutPanel { AutoSize = true };
+            foreach (var opt in new[] { "ê±°ë˜ëŒ€ê¸ˆ", "ê±°ë˜ëŸ‰", "ë“±ë½ë¥ ", "AI ì ìˆ˜" }) optPanel.Controls.Add(new CheckBox { Text = opt, AutoSize = true, Checked = true, FlatStyle = FlatStyle.Flat, ForeColor = Color.White });
+            topPanel.Controls.Add(optPanel);
+
+            sectorPanel = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 5, 0, 5) };
+            string[] sectors = { "ë°˜ë„ì²´", "AI", "ìë™ì°¨", "ë°”ì´ì˜¤", "2ì°¨ì „ì§€", "ë°©ì‚°", "ê¸ˆìœµ", "ì—ë„ˆì§€" };
+            for (int i = 0; i < sectors.Length; i++)
             {
-                CheckBox cb = new CheckBox { Text = opt, AutoSize = true, ForeColor = TextColor, FlatStyle = FlatStyle.Flat };
-                if (opt == "°Å·¡´ë±İ" || opt == "AI Á¡¼ö") cb.Checked = true;
-                checkPanel.Controls.Add(cb);
+                var cb = new CheckBox { Text = sectors[i], AutoSize = true, ForeColor = _colors[i % _colors.Length], FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+                cb.CheckedChanged += async (s, e) => { if (cb.Checked) await RefreshDataAsync(); };
+                if (sectors[i] == "ë°˜ë„ì²´" || sectors[i] == "AI") cb.Checked = true;
+                sectorPanel.Controls.Add(cb);
             }
-            topLayout.Controls.Add(checkPanel);
+            topPanel.Controls.Add(sectorPanel);
 
-            // 2) ¼½ÅÍ ¼±ÅÃ ¶óµğ¿À¹öÆ°
-            sectorLayout = CreateRowFlow();
-            string[] targetSectors = { "¹İµµÃ¼", "AI", "¹ÙÀÌ¿À", "°Ç¼³", "·Îº¿", "¹æ»ê", "ÀÚµ¿Â÷", "2Â÷ÀüÁö", "È­ÀåÇ°", "¿øÀü" };
-            foreach (var sec in targetSectors)
+            controlPanel = new FlowLayoutPanel { AutoSize = true };
+            foreach (var p in new[] { "ì˜¤ëŠ˜", "5ì¼", "20ì¼", "60ì¼" })
             {
-                RadioButton rb = new RadioButton { Text = sec, AutoSize = true, ForeColor = TextColor, FlatStyle = FlatStyle.Flat };
-                rb.CheckedChanged += (s, e) => { if (rb.Checked) RefreshScreenData(rb.Text, "¿À´Ã"); };
-                if (sec == "¹İµµÃ¼") rb.Checked = true;
-                sectorLayout.Controls.Add(rb);
-            }
-            topLayout.Controls.Add(sectorLayout);
-
-            // 3) ±â°£ Åä±Û ¹× Á¤·Ä ÄŞº¸¹Ú½º
-            FlowLayoutPanel controlPanel = CreateRowFlow();
-            string[] periods = { "¿À´Ã", "5ÀÏ", "20ÀÏ", "60ÀÏ", "120ÀÏ", "1³â" };
-            foreach (var p in periods)
-            {
-                Button btn = new Button { Text = p, Size = new Size(65, 28), FlatStyle = FlatStyle.Flat, BackColor = (p == "¿À´Ã") ? AccentColor : BgColor, ForeColor = TextColor };
-                btn.FlatAppearance.BorderSize = 1;
-                btn.Click += PeriodButton_Click;
+                var btn = new Button { Text = p, Size = new Size(65, 30), FlatStyle = FlatStyle.Flat, BackColor = p == "20ì¼" ? Color.FromArgb(0, 122, 204) : BackColor, ForeColor = Color.White };
+                btn.Click += async (s, e) => {
+                    foreach (Button b in controlPanel.Controls.OfType<Button>()) b.BackColor = BackColor;
+                    btn.BackColor = Color.FromArgb(0, 122, 204);
+                    await RefreshDataAsync();
+                };
                 controlPanel.Controls.Add(btn);
             }
-            controlPanel.Controls.Add(new Label { Text = "    Á¤·Ä ±âÁØ: ", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
-            ComboBox cmbSort = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, BackColor = BgColor, ForeColor = TextColor, Width = 110 };
-            cmbSort.Items.AddRange(new object[] { "°Å·¡´ë±İ", "°Å·¡·® Áõ°¡À²", "»ó½Â·ü", "AI Á¡¼ö" });
-            cmbSort.SelectedIndex = 0;
-            controlPanel.Controls.Add(cmbSort);
-            topLayout.Controls.Add(controlPanel);
+            topPanel.Controls.Add(controlPanel);
+            baseTable.Controls.Add(topPanel, 0, 0);
 
-            baseTable.Controls.Add(topLayout, 0, 0);
+            split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 850 };
+            var leftTable = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2 }; leftTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); leftTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 45F));
 
-            // ------------------------------------------
-            // ¨è ¸ŞÀÎ Â÷Æ® & ¨é ¿ìÃø Á¤º¸ ÆĞ³Î (Split)
-            // ------------------------------------------
-            mainSplitter = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 780, BackColor = BgColor };
+            chart = new CustomMultiBarChart { Dock = DockStyle.Fill };
+            lblSummary = new Label { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Yellow, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("ë§‘ì€ ê³ ë”•", 10.5F, FontStyle.Bold) };
+            leftTable.Controls.Add(chart, 0, 0); leftTable.Controls.Add(lblSummary, 0, 1);
+            split.Panel1.Controls.Add(leftTable);
 
-            // ÁÂÃø Â÷Æ® ·¹ÀÌ¾Æ¿ô ±¸¼º
-            TableLayoutPanel leftChartContainer = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
-            leftChartContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            leftChartContainer.RowStyles.Add(new RowStyle(SizeType.Absolute, 45F));
-
-            mainChart = new CustomAreaChart { Dock = DockStyle.Fill };
-            leftChartContainer.Controls.Add(mainChart, 0, 0);
-
-            lblSectorSummary = new Label { Dock = DockStyle.Fill, BackColor = PanelBgColor, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("¸¼Àº °íµñ", 10.5F, FontStyle.Bold) };
-            leftChartContainer.Controls.Add(lblSectorSummary, 0, 1);
-            mainSplitter.Panel1.Controls.Add(leftChartContainer);
-
-            // ¿ìÃø TOP Á¾¸ñ ±×¸®µå ±¸¼º
-            dgvSectorStocks = new DataGridView
+            dgv = new DataGridView
             {
                 Dock = DockStyle.Fill,
-                BackgroundColor = PanelBgColor,
+                BackgroundColor = Color.FromArgb(25, 25, 25),
                 BorderStyle = BorderStyle.None,
                 AllowUserToAddRows = false,
                 ReadOnly = true,
                 RowHeadersVisible = false,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                EnableHeadersVisualStyles = false
+                EnableHeadersVisualStyles = false,
+                GridColor = Color.FromArgb(50, 50, 50)
             };
-            dgvSectorStocks.DefaultCellStyle.BackColor = PanelBgColor;
-            dgvSectorStocks.DefaultCellStyle.ForeColor = TextColor;
-            dgvSectorStocks.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(45, 45, 45);
-            dgvSectorStocks.ColumnHeadersDefaultCellStyle.ForeColor = TextColor;
-            dgvSectorStocks.CellDoubleClick += (s, e) =>
+            dgv.DefaultCellStyle.BackColor = Color.FromArgb(35, 35, 35); dgv.DefaultCellStyle.ForeColor = Color.White;
+            dgv.DefaultCellStyle.SelectionBackColor = Color.FromArgb(0, 122, 204); dgv.DefaultCellStyle.SelectionForeColor = Color.White;
+            dgv.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(45, 45, 45); dgv.AlternatingRowsDefaultCellStyle.ForeColor = Color.White;
+            dgv.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(55, 55, 55); dgv.ColumnHeadersDefaultCellStyle.ForeColor = Color.White; dgv.ColumnHeadersDefaultCellStyle.Font = new Font("ë§‘ì€ ê³ ë”•", 10F, FontStyle.Bold);
+            split.Panel2.Controls.Add(dgv); baseTable.Controls.Add(split, 0, 1);
+
+            rtbLog = new RichTextBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 15, 15), ForeColor = Color.LightGreen, Font = new Font("Consolas", 10.5F), BorderStyle = BorderStyle.None };
+            baseTable.Controls.Add(rtbLog, 0, 2);
+        }
+
+        private async Task RefreshDataAsync(bool isAutoRefresh = false)
+        {
+            if (chart == null || sectorPanel == null) return;
+            if (_isRefreshing) return;
+            _isRefreshing = true;
+
+            try
             {
-                if (e.RowIndex >= 0)
+                string period = controlPanel.Controls.OfType<Button>().First(b => b.BackColor != BackColor).Text;
+                var selectedSectors = sectorPanel.Controls.OfType<CheckBox>().Where(c => c.Checked).Select(c => c.Text).ToList();
+                if (selectedSectors.Count == 0) return;
+
+                // 1. ì°¨íŠ¸ ë Œë”ë§ (ê³¼ê±° ê³ ì •, ì˜¤ëŠ˜ë§Œ ë³€ë™ë˜ëŠ” Bar Chart)
+                var series = new List<ChartSeries>();
+                int cIdx = 0;
+                foreach (CheckBox cb in sectorPanel.Controls)
                 {
-                    string name = dgvSectorStocks.Rows[e.RowIndex].Cells["Name"].Value.ToString();
-                    MessageBox.Show($"[{name}] »ó¼¼ ºĞ¼® ´ë½Ãº¸µå·Î ÀÌµ¿ÇÕ´Ï´Ù. (È®Àå ¸ğµâ ¿¬µ¿¿ë ¼³°è ¿Ï·á)", "Á¾¸ñ »ó¼¼ Á¤º¸", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    if (cb.Checked)
+                    {
+                        var data = _api.GetChartData(cb.Text, period);
+                        series.Add(new ChartSeries { Name = cb.Text, XLabels = data.XLabels, Y = data.Y, SeriesColor = _colors[cIdx % _colors.Length] });
+                    }
+                    cIdx++;
                 }
-            };
+                chart.UpdateChart(string.Join(" vs ", selectedSectors) + $" ê±°ë˜ëŒ€ê¸ˆ íë¦„ ({period})", series);
 
-            mainSplitter.Panel2.Controls.Add(dgvSectorStocks);
-            baseTable.Controls.Add(mainSplitter, 0, 1);
+                // 2. ì™¸ë¶€ API í˜¸ì¶œ (í‘œ ë°ì´í„° ê°±ì‹ )
+                var topStocks = await _api.GetRealTimeTopStocksAsync(selectedSectors);
 
-            // ------------------------------------------
-            // ¨ê ÇÏ´Ü ½Ç½Ã°£ AI ºĞ¼® ÆĞ³Î
-            // ------------------------------------------
-            rtbAiLog = new RichTextBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 15, 15), ForeColor = Color.LightGreen, Font = new Font("Consolas", 10.5F), ReadOnly = true, BorderStyle = BorderStyle.None };
-            baseTable.Controls.Add(rtbAiLog, 0, 2);
-        }
+                lblSummary.Text = $" â–  [ì‹¤ì‹œê°„ ë³¼ë¥¨ ì¶”ì ] í˜„ì¬ ì£¼ë„ ì„¹í„°: {topStocks.FirstOrDefault()?.Sector} (ëŒ€ì¥ì£¼: {topStocks.FirstOrDefault()?.Name}) | ë§ˆì§€ë§‰ ê°±ì‹ : {DateTime.Now:HH:mm:ss}";
+                dgv.DataSource = null; dgv.DataSource = topStocks;
 
-        private FlowLayoutPanel CreateRowFlow()
-        {
-            return new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = new Padding(0, 0, 0, 4) };
-        }
-
-        // ------------------------------------------
-        // 4. ·ÎÁ÷ ¹× µ¥ÀÌÅÍ °»½Å ÀÌº¥Æ® Ã³¸®
-        // ------------------------------------------
-        private void InitializeDefaultData()
-        {
-            RefreshScreenData("¹İµµÃ¼", "¿À´Ã");
-            LogAiMessage("[½Ã½ºÅÛ ¸ğ´ÏÅÍ¸µ] Market Flow Analyzer ¿£Áø È°¼ºÈ­ ¿Ï·á.", Color.DarkGray);
-            LogAiMessage("[ÀÚ±İ ÀÌµ¿ °¨Áö] ¡Ú¡Ú¡Ú¡Ú¡Ú 2Â÷ÀüÁö(-5,200¾ï) ¢Ù ¼ö±Ş À¯Ãâ ¹ß»ı -> ¹İµµÃ¼(+6,100¾ï) ¢Ö °­ÇÑ ÀÚ±İ À¯ÀÔ °¨ÁöµÊ.", Color.Cyan);
-            LogAiMessage("[½Å±Ô Å×¸¶ ¹ß°ß] ¾çÀÚÄÄÇ»ÅÍ ¼½ÅÍ Æò±Õ °Å·¡´ë±İ 180¾ï ´ëºñ ¿À´Ã 1,700¾ï µ¹ÆÄ (AI ÀÎ±â Á¡¼ö: 94Á¡)", Color.Gold);
-        }
-
-        private void PeriodButton_Click(object sender, EventArgs e)
-        {
-            Button clicked = sender as Button;
-            if (clicked == null) return;
-
-            // ±â°£ Åä±Û ¹öÆ° µğÀÚÀÎ º¯°æ È¿°ú
-            foreach (Control ctrl in clicked.Parent.Controls)
-            {
-                if (ctrl is Button btn) btn.BackColor = BgColor;
+                if (dgv.Columns.Count > 0)
+                {
+                    dgv.Columns["Rank"].HeaderText = "ìˆœìœ„"; dgv.Columns["Sector"].HeaderText = "ì„¹í„°"; dgv.Columns["Ticker"].HeaderText = "í‹°ì»¤";
+                    dgv.Columns["Name"].HeaderText = "ì¢…ëª©ëª…"; dgv.Columns["CurrentPrice"].HeaderText = "í˜„ì¬ê°€($)"; dgv.Columns["ChangeRate"].HeaderText = "ë“±ë½ë¥ (%)";
+                    dgv.Columns["TradeValue"].HeaderText = "ê±°ë˜ëŒ€ê¸ˆ(USD)"; dgv.Columns["AiScore"].HeaderText = "AIì ìˆ˜";
+                }
+                if (!isAutoRefresh) Log($"[ìˆ˜ê¸‰ ì¶”ì ] {string.Join(", ", selectedSectors)} ì„¹í„° ì°¨íŠ¸ ë Œë”ë§ ì™„ë£Œ.");
             }
-            clicked.BackColor = AccentColor;
-
-            // ÇöÀç ¼±ÅÃµÇ¾î ÀÖ´Â ¼½ÅÍ È®ÀÎ
-            string currentSector = "¹İµµÃ¼";
-            foreach (RadioButton rb in sectorLayout.Controls)
-            {
-                if (rb.Checked) currentSector = rb.Text;
-            }
-
-            RefreshScreenData(currentSector, clicked.Text);
+            finally { _isRefreshing = false; }
         }
 
-        private void RefreshScreenData(string sector, string period)
-        {
-            // [ÇØ°á ÄÚµå] UI°¡ ¿ÏÀüÈ÷ ¸¸µé¾îÁö±â Àü¿¡ ÀÌº¥Æ®°¡ ºÒ¸®´Â °ÍÀ» ¹æÁö
-            if (mainChart == null) return;
-
-            // 1) ¼ø¼ö ±×·¡ÇÈ Â÷Æ® ¾÷µ¥ÀÌÆ®
-            var chartData = _dataService.GetSectorChartData(sector, period);
-            mainChart.UpdateChart($"{sector} ¼½ÅÍ ½Ç½Ã°£ ÀÚ±İ Èå¸§ ÃßÀû »óÅÂ ({period})", chartData.X, chartData.Y);
-
-            // 2) ÇÏ´Ü ÅØ½ºÆ® ¿ä¾à Á¤º¸ °»½Å
-            lblSectorSummary.Text = $"   ¡á ÇöÀç ¼±ÅÃ ¼½ÅÍ: {sector}   |   ÇöÀç ÃÑ °Å·¡´ë±İ: 2Á¶ 3,400¾ï (+18.4%)   |   AI °¡ÁßÄ¡ Á¡¼ö: 92Á¡   |   5ÀÏ ´©Àû µî¶ô·ü: +14.0%";
-
-            // 3) ¿ìÃø DataGridView ¹ÙÀÎµù ¹× Çì´õ ÇÑ±ÛÈ­
-            dgvSectorStocks.DataSource = null;
-            dgvSectorStocks.DataSource = _dataService.GetTopStocks(sector);
-
-            if (dgvSectorStocks.Columns.Count > 0)
-            {
-                dgvSectorStocks.Columns["Rank"].HeaderText = "¼øÀ§";
-                dgvSectorStocks.Columns["Name"].HeaderText = "Á¾¸ñ¸í";
-                dgvSectorStocks.Columns["CurrentPrice"].HeaderText = "ÇöÀç°¡";
-                dgvSectorStocks.Columns["ChangeRate"].HeaderText = "µî¶ô·ü(%)";
-                dgvSectorStocks.Columns["TradeValue"].HeaderText = "°Å·¡´ë±İ";
-                dgvSectorStocks.Columns["ForeignBuy"].HeaderText = "¿ÜÀÎ ¼ø¸Å¼ö";
-                dgvSectorStocks.Columns["InstitutionalBuy"].HeaderText = "±â°ü ¼ø¸Å¼ö";
-                dgvSectorStocks.Columns["AiScore"].HeaderText = "AI Á¡¼ö";
-            }
-        }
-
-        private void LogAiMessage(string text, Color color)
-        {
-            rtbAiLog.SelectionStart = rtbAiLog.TextLength;
-            rtbAiLog.SelectionLength = 0;
-            rtbAiLog.SelectionColor = color;
-            rtbAiLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {text}\n");
-            rtbAiLog.SelectionColor = rtbAiLog.ForeColor;
-            rtbAiLog.ScrollToCaret();
-        }
+        private void Log(string txt) { if (rtbLog == null) return; rtbLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {txt}\n"); rtbLog.ScrollToCaret(); }
     }
 
-    // ==========================================
-    // 5. ÁøÀÔÁ¡ (Program Main)
-    // ==========================================
     static class Program
     {
-        [STAThread]
-        static void Main()
-        {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
-        }
+        [STAThread] static void Main() { Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false); Application.Run(new MainForm()); }
     }
 }
