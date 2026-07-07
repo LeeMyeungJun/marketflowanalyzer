@@ -1,0 +1,19 @@
+# Godot
+.godot/
+/android/
+/ios/
+export_presets.cfg
+
+# C# / .NET
+bin/
+obj/
+*.user
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+
+# Module session locks — runtime coordination, never committed
+docs/modules/*/LOCK
