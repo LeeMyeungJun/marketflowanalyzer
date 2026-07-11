@@ -13,9 +13,14 @@ namespace MarketFlowAnalyzer
     // ==========================================
     // 1. Models
     // ==========================================
-    public class YFResponse { public YFQuoteResponse quoteResponse { get; set; } }
-    public class YFQuoteResponse { public List<YFQuote> result { get; set; } }
-    public class YFQuote { public string symbol { get; set; } public string shortName { get; set; } public double regularMarketPrice { get; set; } public long regularMarketVolume { get; set; } public double regularMarketChangePercent { get; set; } }
+    public class QuoteInfo
+    {
+        public string Symbol { get; set; }
+        public string Name { get; set; }
+        public double Price { get; set; }
+        public long Volume { get; set; }
+        public double ChangePercent { get; set; }
+    }
 
     public class StockData
     {
@@ -45,7 +50,8 @@ namespace MarketFlowAnalyzer
         private static readonly HttpClient _http;
         private Random _rnd = new Random();
 
-        // 💡 60일치 과거 데이터를 고정으로 보관하는 메모리 캐시
+        // 💡 과거 데이터를 고정으로 보관하는 메모리 캐시 (120일 간격 x 20개 막대까지 지원하려면 2281일 이상 필요)
+        private const int HistoryDays = 2400;
         private Dictionary<string, double[]> _historicalVolume = new Dictionary<string, double[]>();
 
         static MarketDataService()
@@ -68,12 +74,12 @@ namespace MarketFlowAnalyzer
 
         public MarketDataService()
         {
-            // 프로그램 시작 시 각 섹터별 60일치 과거 데이터 고정 생성 (절대 변하지 않음)
+            // 프로그램 시작 시 각 섹터별 과거 데이터 고정 생성 (절대 변하지 않음, 오늘 인덱스만 실시간 변동)
             foreach (var sec in _sectorTickers.Keys)
             {
-                double[] history = new double[60];
+                double[] history = new double[HistoryDays];
                 double baseVol = 3000 + (sec.Length * 500);
-                for (int i = 0; i < 60; i++)
+                for (int i = 0; i < HistoryDays; i++)
                 {
                     baseVol += _rnd.Next(-300, 350);
                     if (baseVol < 500) baseVol = 500 + _rnd.Next(100, 500);
@@ -83,38 +89,67 @@ namespace MarketFlowAnalyzer
             }
         }
 
-        // 타이머가 돌 때 '오늘(59번 인덱스)'의 데이터만 실시간으로 변동시킴
+        // 타이머가 돌 때 '오늘(마지막 인덱스)'의 데이터만 실시간으로 변동시킴
         public void UpdateTodayVolumeLive()
         {
             foreach (var sec in _historicalVolume.Keys)
             {
+                int last = _historicalVolume[sec].Length - 1;
                 double change = _rnd.Next(-150, 200);
-                _historicalVolume[sec][59] += change;
-                if (_historicalVolume[sec][59] < 100) _historicalVolume[sec][59] = 100;
+                _historicalVolume[sec][last] += change;
+                if (_historicalVolume[sec][last] < 100) _historicalVolume[sec][last] = 100;
             }
         }
 
-        // 차트에 그릴 과거 데이터 + 오늘 데이터 배열 자르기
+        private static int PeriodToInterval(string period) => period switch
+        {
+            "1일" => 1,
+            "5일" => 5,
+            "20일" => 20,
+            "60일" => 60,
+            "120일" => 120,
+            _ => 1
+        };
+
+        // 차트에 그릴 데이터: 선택한 주기(interval) 간격으로 항상 20개 막대를 뽑는다
+        // 예) "5일" 선택 시 -> 5일 간격으로 20개(=100일치 흐름), "120일" 선택 시 -> 120일 간격으로 20개(=2400일치 흐름)
         public (string[] XLabels, double[] Y) GetChartData(string sector, string period)
         {
-            int days = period == "오늘" ? 1 : period == "5일" ? 5 : period == "20일" ? 20 : 60;
-
-            string[] labels = new string[days];
-            double[] yData = new double[days];
-
+            const int points = 20;
+            int interval = PeriodToInterval(period);
             double[] fullHistory = _historicalVolume[sector];
+            int lastIdx = fullHistory.Length - 1;
+            DateTime today = DateTime.Today;
 
-            for (int i = 0; i < days; i++)
+            string[] labels = new string[points];
+            double[] yData = new double[points];
+
+            for (int i = 0; i < points; i++)
             {
-                // 60개 배열 중 끝에서부터 필요한 만큼 잘라냄
-                int targetIndex = 60 - days + i;
-                yData[i] = fullHistory[targetIndex];
-
-                // 라벨링 (마지막은 '오늘', 나머지는 'D-날짜')
-                if (i == days - 1) labels[i] = "오늘";
-                else labels[i] = $"D-{days - 1 - i}";
+                int daysAgo = (points - 1 - i) * interval;
+                int idx = Math.Max(0, lastIdx - daysAgo);
+                yData[i] = fullHistory[idx];
+                labels[i] = daysAgo == 0 ? "오늘" : today.AddDays(-daysAgo).ToString("yy.MM.dd");
             }
             return (labels, yData);
+        }
+
+        // 8개 섹터 전체를 기준으로, 현재 1위 섹터가 언제부터/며칠째 1위를 유지 중인지 계산 ("대세픽" 추적)
+        public (string Sector, int StreakDays, DateTime Since) GetLeadingSectorStreak()
+        {
+            int len = _historicalVolume.Values.First().Length;
+            string currentTop = _sectorTickers.Keys.OrderByDescending(s => _historicalVolume[s][len - 1]).First();
+
+            int streak = 0;
+            for (int i = len - 1; i >= 0; i--)
+            {
+                string topAtDay = _sectorTickers.Keys.OrderByDescending(s => _historicalVolume[s][i]).First();
+                if (topAtDay != currentTop) break;
+                streak++;
+            }
+
+            DateTime since = DateTime.Today.AddDays(-(streak - 1));
+            return (currentTop, streak, since);
         }
 
         public async Task<List<StockData>> GetRealTimeTopStocksAsync(List<string> sectors)
@@ -123,34 +158,64 @@ namespace MarketFlowAnalyzer
             foreach (var sec in sectors)
             {
                 if (!_sectorTickers.ContainsKey(sec)) continue;
-                string url = $"https://query1.finance.yahoo.com/v7/finance/quote?symbols={string.Join(",", _sectorTickers[sec])}";
 
-                try
+                var quotes = await Task.WhenAll(_sectorTickers[sec].Select(GetQuoteAsync));
+                var valid = quotes.Where(q => q != null).ToList();
+
+                if (valid.Count > 0)
                 {
-                    string json = await _http.GetStringAsync(url);
-                    var yfData = JsonSerializer.Deserialize<YFResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-                    if (yfData?.quoteResponse?.result != null && yfData.quoteResponse.result.Count > 0)
+                    var top = valid.OrderByDescending(q => q.Price * q.Volume).First();
+                    double tradeValueUSD = top.Price * top.Volume;
+                    resultList.Add(new StockData
                     {
-                        var top = yfData.quoteResponse.result.OrderByDescending(s => s.regularMarketPrice * s.regularMarketVolume).First();
-                        double tradeValueUSD = top.regularMarketPrice * top.regularMarketVolume;
-                        resultList.Add(new StockData
-                        {
-                            Sector = sec,
-                            Ticker = top.symbol,
-                            Name = top.shortName ?? top.symbol,
-                            CurrentPrice = Math.Round(top.regularMarketPrice, 2),
-                            ChangeRate = Math.Round(top.regularMarketChangePercent, 2),
-                            TradeValue = FormatMoney(tradeValueUSD + _rnd.Next(-50000, 50000)), // 라이브 효과 노이즈
-                            AiScore = _rnd.Next(85, 100)
-                        });
-                    }
+                        Sector = sec,
+                        Ticker = top.Symbol,
+                        Name = top.Name,
+                        CurrentPrice = Math.Round(top.Price, 2),
+                        ChangeRate = Math.Round(top.ChangePercent, 2),
+                        TradeValue = FormatMoney(tradeValueUSD),
+                        AiScore = _rnd.Next(85, 100)
+                    });
                 }
-                catch { resultList.Add(new StockData { Sector = sec, Ticker = "ERR", Name = "수신 지연" }); }
+                else
+                {
+                    resultList.Add(new StockData { Sector = sec, Ticker = "ERR", Name = "수신 지연" });
+                }
             }
             var sortedList = resultList.OrderByDescending(s => s.AiScore).ToList();
             for (int i = 0; i < sortedList.Count; i++) sortedList[i].Rank = i + 1;
             return sortedList;
+        }
+
+        // v7/finance/quote 는 크럼(crumb) 인증이 없으면 401 Unauthorized를 반환하므로,
+        // 인증 없이 접근 가능한 v8/finance/chart 엔드포인트를 종목별로 호출한다
+        private async Task<QuoteInfo> GetQuoteAsync(string ticker)
+        {
+            try
+            {
+                string url = $"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d";
+                string json = await _http.GetStringAsync(url);
+                using var doc = JsonDocument.Parse(json);
+                var results = doc.RootElement.GetProperty("chart").GetProperty("result");
+                if (results.ValueKind != JsonValueKind.Array || results.GetArrayLength() == 0) return null;
+
+                var meta = results[0].GetProperty("meta");
+                double price = meta.GetProperty("regularMarketPrice").GetDouble();
+                long volume = meta.TryGetProperty("regularMarketVolume", out var v) ? v.GetInt64() : 0;
+                double prevClose = meta.TryGetProperty("chartPreviousClose", out var pc) ? pc.GetDouble() : price;
+                string name = meta.TryGetProperty("longName", out var ln) ? ln.GetString()
+                             : meta.TryGetProperty("shortName", out var sn) ? sn.GetString() : ticker;
+
+                return new QuoteInfo
+                {
+                    Symbol = ticker,
+                    Name = name ?? ticker,
+                    Price = price,
+                    Volume = volume,
+                    ChangePercent = prevClose == 0 ? 0 : (price - prevClose) / prevClose * 100.0
+                };
+            }
+            catch { return null; }
         }
 
         private string FormatMoney(double value)
@@ -275,7 +340,18 @@ namespace MarketFlowAnalyzer
     public class MainForm : Form
     {
         private MarketDataService _api = new MarketDataService();
-        private Color[] _colors = { Color.DeepSkyBlue, Color.HotPink, Color.LimeGreen, Color.Orange, Color.Gold, Color.MediumSpringGreen };
+        // 섹터별 고정 색상 (자동차/방산처럼 인접한 색이 서로 비슷해 구분이 안 되는 문제를 없애기 위해 뚜렷하게 구분되는 팔레트 사용)
+        private static readonly Dictionary<string, Color> _sectorColors = new Dictionary<string, Color>
+        {
+            { "반도체", Color.FromArgb(0x4E, 0x79, 0xA7) },  // 파랑
+            { "AI", Color.FromArgb(0xF2, 0x8E, 0x2B) },       // 주황
+            { "자동차", Color.FromArgb(0xE1, 0x57, 0x59) },   // 빨강
+            { "바이오", Color.FromArgb(0x76, 0xB7, 0xB2) },   // 청록
+            { "2차전지", Color.FromArgb(0x59, 0xA1, 0x4F) },  // 초록
+            { "방산", Color.FromArgb(0xED, 0xC9, 0x48) },     // 노랑
+            { "금융", Color.FromArgb(0xB0, 0x7A, 0xA1) },     // 보라
+            { "에너지", Color.FromArgb(0xFF, 0x9D, 0xA7) }    // 분홍
+        };
 
         private FlowLayoutPanel topPanel, sectorPanel, controlPanel;
         private SplitContainer split;
@@ -321,7 +397,7 @@ namespace MarketFlowAnalyzer
             string[] sectors = { "반도체", "AI", "자동차", "바이오", "2차전지", "방산", "금융", "에너지" };
             for (int i = 0; i < sectors.Length; i++)
             {
-                var cb = new CheckBox { Text = sectors[i], AutoSize = true, ForeColor = _colors[i % _colors.Length], FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+                var cb = new CheckBox { Text = sectors[i], AutoSize = true, ForeColor = _sectorColors[sectors[i]], FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
                 cb.CheckedChanged += async (s, e) => { if (cb.Checked) await RefreshDataAsync(); };
                 if (sectors[i] == "반도체" || sectors[i] == "AI") cb.Checked = true;
                 sectorPanel.Controls.Add(cb);
@@ -329,7 +405,7 @@ namespace MarketFlowAnalyzer
             topPanel.Controls.Add(sectorPanel);
 
             controlPanel = new FlowLayoutPanel { AutoSize = true };
-            foreach (var p in new[] { "오늘", "5일", "20일", "60일" })
+            foreach (var p in new[] { "1일", "5일", "20일", "60일", "120일" })
             {
                 var btn = new Button { Text = p, Size = new Size(65, 30), FlatStyle = FlatStyle.Flat, BackColor = p == "20일" ? Color.FromArgb(0, 122, 204) : BackColor, ForeColor = Color.White };
                 btn.Click += async (s, e) => {
@@ -343,7 +419,7 @@ namespace MarketFlowAnalyzer
             baseTable.Controls.Add(topPanel, 0, 0);
 
             split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 850 };
-            var leftTable = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2 }; leftTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); leftTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 45F));
+            var leftTable = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2 }; leftTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); leftTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 65F));
 
             chart = new CustomMultiBarChart { Dock = DockStyle.Fill };
             lblSummary = new Label { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.Yellow, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("맑은 고딕", 10.5F, FontStyle.Bold) };
@@ -387,22 +463,22 @@ namespace MarketFlowAnalyzer
 
                 // 1. 차트 렌더링 (과거 고정, 오늘만 변동되는 Bar Chart)
                 var series = new List<ChartSeries>();
-                int cIdx = 0;
                 foreach (CheckBox cb in sectorPanel.Controls)
                 {
                     if (cb.Checked)
                     {
                         var data = _api.GetChartData(cb.Text, period);
-                        series.Add(new ChartSeries { Name = cb.Text, XLabels = data.XLabels, Y = data.Y, SeriesColor = _colors[cIdx % _colors.Length] });
+                        series.Add(new ChartSeries { Name = cb.Text, XLabels = data.XLabels, Y = data.Y, SeriesColor = _sectorColors[cb.Text] });
                     }
-                    cIdx++;
                 }
-                chart.UpdateChart(string.Join(" vs ", selectedSectors) + $" 거래대금 흐름 ({period})", series);
+                chart.UpdateChart(string.Join(" vs ", selectedSectors) + $" 거래대금 흐름 (주기: {period})", series);
 
                 // 2. 외부 API 호출 (표 데이터 갱신)
                 var topStocks = await _api.GetRealTimeTopStocksAsync(selectedSectors);
+                var leader = _api.GetLeadingSectorStreak();
 
-                lblSummary.Text = $" ■ [실시간 볼륨 추적] 현재 주도 섹터: {topStocks.FirstOrDefault()?.Sector} (대장주: {topStocks.FirstOrDefault()?.Name}) | 마지막 갱신: {DateTime.Now:HH:mm:ss}";
+                lblSummary.Text = $" ■ [실시간 볼륨 추적] 현재 주도 섹터: {topStocks.FirstOrDefault()?.Sector} (대장주: {topStocks.FirstOrDefault()?.Name}) | 마지막 갱신: {DateTime.Now:HH:mm:ss}\n" +
+                                  $" 🏆 [대세픽] {leader.Sector} 섹터가 {leader.Since:yyyy-MM-dd}부터 {leader.StreakDays}일째 1위 유지 중 (전체 8개 섹터 기준)";
                 dgv.DataSource = null; dgv.DataSource = topStocks;
 
                 if (dgv.Columns.Count > 0)
